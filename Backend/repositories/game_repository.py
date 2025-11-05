@@ -1,0 +1,6 @@
+from typing import Protocol, Tuple, List, Any
+
+class GameRepository(Protocol):
+    """Persistence-agnostic contract for storing games."""
+    def init(self) -> None: ...
+    def upsert_games(self, games: List[Any]) -> Tuple[int, int]: ...
