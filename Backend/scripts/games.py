@@ -1,10 +1,18 @@
 import re
 from chessdotcom import ChessDotComClient
 from typing import List
+from dataclasses import dataclass
 
-from models.game_model import Game
 
-client = ChessDotComClient(user_agent = "WolfOnTheBoard application")
+@dataclass
+class Game:
+    pgn: str
+    year: int
+    month: int
+
+
+client = ChessDotComClient(user_agent="WolfOnTheBoard application")
+
 
 def parse_pgn_games(pgn_text: str) -> List[str]:
     """Split a bulk PGN blob into individual game PGNs.
@@ -43,16 +51,4 @@ def fetch_games_in_month(username: str, year: int, month: int) -> List[Game]:
     return games
 
 
-
-
-
-
-# all_games = fetch_all_games("WolfOnTheBoard")
-# print(f"Total games parsed: {len(all_games)}")
-# if all_games:
-#     print(all_games[0])
-
 games = fetch_games_in_month("WolfOnTheBoard", 2025, 9)
-print(len(games))
-print(games[0])
-
