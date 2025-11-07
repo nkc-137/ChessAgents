@@ -1,0 +1,7 @@
+repos:
+  - repo: https://github.com/pycqa/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        args: ["--config", "Backend/.flake8"]
+        additional_dependencies: []

@@ -1,40 +1,16 @@
-from __future__ import annotations
-import os
 import hashlib
-from typing import Tuple, List, Optional, Any
+import os
+from pathlib import Path
+from typing import Optional, List, Any, Tuple
 
-from sqlmodel import SQLModel, Field, create_engine, Session, select
-
-from repositories.game_repository import GameRepository
-
-
-# ===== Facade & Contracts =====
-
-class GameStore:
-    """Facade that hides which backend we use (SQLite/SQLModel, Postgres, etc.)."""
-    def __init__(self, repo: GameRepository):
-        self.repo = repo
-        self.repo.init()
-
-    @staticmethod
-    def from_env() -> "GameStore":
-        """
-        Select a backend via CGE_DB_BACKEND env var.
-        Supported: 'sqlmodel' (default).
-        """
-        backend = os.getenv("CGE_DB_BACKEND", "sqlmodel").lower()
-        if backend == "sqlmodel":
-            return GameStore(SqlModelGameRepository())
-        raise ValueError(f"Unsupported backend: {backend}")
-
-    def ingest(self, games: List[Any]) -> dict:
-        inserted, skipped = self.repo.upsert_games(games)
-        return {"inserted": inserted, "skipped": skipped}
-
+from sqlmodel import SQLModel, Field, Session, select
+from sqlmodel import create_engine
 
 # ===== Default SQLite / SQLModel Backend =====
-
-DB_PATH = os.getenv("CGE_DB_PATH", "database/cge.db")
+BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_DB_PATH = BASE_DIR / "database"
+DEFAULT_DB_PATH.mkdir(parents=True, exist_ok=True)
+DB_PATH = os.getenv("CGE_DB_PATH", DEFAULT_DB_PATH / "cge.db")
 _engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
 
@@ -52,13 +28,10 @@ class GameRow(SQLModel, table=True):
     black: Optional[str] = None
     result: Optional[str] = None
     time_control: Optional[str] = None
+    eco_url: Optional[str] = None
     eco: Optional[str] = None
     opening: Optional[str] = None
     end_time_utc: Optional[int] = None
-
-
-def _pgn_hash(pgn: str) -> str:
-    return hashlib.sha1(pgn.encode("utf-8", errors="ignore")).hexdigest()
 
 
 class SqlModelGameRepository:
@@ -93,10 +66,17 @@ class SqlModelGameRepository:
                     black=getattr(g, "black", None),
                     result=getattr(g, "result", None),
                     time_control=getattr(g, "time_control", None),
+                    eco_url=getattr(g, "eco_url", None),
                     eco=getattr(g, "eco", None),
+                    opening=(getattr(g, "opening_name", None)),
                     end_time_utc=getattr(g, "end_time_utc", None),
                 )
+
                 session.add(row)
                 inserted += 1
             session.commit()
         return inserted, skipped
+
+
+def _pgn_hash(pgn: str) -> str:
+    return hashlib.sha1(pgn.encode("utf-8", errors="ignore")).hexdigest()

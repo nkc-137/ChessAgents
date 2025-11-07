@@ -1,0 +1,20 @@
+[flake8]
+max-line-length = 100
+exclude =
+    .venv,
+    __pycache__,
+    build,
+    dist,
+    migrations
+ignore =
+    # whitespace before ':'
+    E203,
+    # too many leading '#' for block comment
+    E266,
+    # line too long (we control via max-line-length)
+    E501,
+    # line break before binary operator
+    W503,
+per-file-ignores =
+    # ignore unused imports in __init__.py
+    __init__.py:F401

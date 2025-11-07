@@ -3,4 +3,4 @@ uvicorn[standard]==0.30.6
 sqlmodel==0.0.22
 python-chess==1.999
 pydantic==2.9.2
-openix==2.0.3
+flake8==7.3.0

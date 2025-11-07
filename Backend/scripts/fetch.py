@@ -1,15 +1,21 @@
 from __future__ import annotations
+
+import io
 from dataclasses import dataclass
 from typing import List, Optional
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import json
-from fastapi import FastAPI, HTTPException, Query, Path
+from fastapi import FastAPI, HTTPException, Path
 from pydantic import BaseModel
-from repositories.game_store import GameStore
+import logging
+from facade.game_store_facade import GameStoreFacade
+from openings.opening_families import OpeningFamilies
+from chess.pgn import read_game
 
 USER_AGENT = "ChessAgent/0.1 (+https://example.local)"
 BASE = "https://api.chess.com/pub/player/{username}/games/{year:04d}/{month:02d}"
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass
@@ -21,7 +27,9 @@ class Game:
     black: Optional[str] = None
     result: Optional[str] = None
     time_control: Optional[str] = None
+    eco_url: Optional[str] = None
     eco: Optional[str] = None
+    opening_name: Optional[str] = None
     end_time_utc: Optional[int] = None  # from EndTime/UTC fields if present
 
 
@@ -33,17 +41,22 @@ class GameOut(BaseModel):
     black: Optional[str] = None
     result: Optional[str] = None
     time_control: Optional[str] = None
+    eco_url: Optional[str] = None
     eco: Optional[str] = None
+    opening_name: Optional[str] = None
     end_time_utc: Optional[int] = None
 
-store: GameStore | None = None
 
-app = FastAPI(title="ChessAgent — Chess.com Fetch API")
+store: GameStoreFacade | None = None
+
+
+app = FastAPI(title="ChessAgent — Chess.com Fetch API", debug=True)
+
 
 @app.on_event("startup")
 def on_startup():
     global store
-    store = GameStore.from_env()
+    store = GameStoreFacade.from_env()
 
 
 def _get_json(url: str) -> dict:
@@ -77,6 +90,9 @@ def fetch_games_in_month(username: str, year: int, month: int) -> List[Game]:
     out: List[Game] = []
     for g in payload.get("games", []):
         pgn = g.get("pgn") or ""
+        pgn_game = read_game(io.StringIO(pgn))
+        eco_code = pgn_game.headers.get("ECO")
+        result = pgn_game.headers.get("Result")
         out.append(
             Game(
                 pgn=pgn,
@@ -84,19 +100,23 @@ def fetch_games_in_month(username: str, year: int, month: int) -> List[Game]:
                 month=month,
                 white=(g.get("white") or {}).get("username"),
                 black=(g.get("black") or {}).get("username"),
-                result=g.get("result"),
+                result=result,
                 time_control=g.get("time_control"),
-                eco=g.get("eco"),
+                eco_url=g.get("eco"),
+                eco=eco_code,
+                opening_name=OpeningFamilies.family_from_eco_or_name(eco_code),
                 end_time_utc=g.get("end_time"),
             )
         )
     return out
+
 
 def ingest_month_into_db(username: str, year: int, month: int) -> dict:
     games = fetch_games_in_month(username, year, month)
     assert store is not None, "Store not initialized"
     counts = store.ingest(games)
     return {**counts, "username": username, "year": year, "month": month}
+
 
 @app.get("/games/{username}/{year}/{month}", response_model=List[GameOut])
 def get_games_for_month(
@@ -107,8 +127,10 @@ def get_games_for_month(
     try:
         games = fetch_games_in_month(username, year, month)
     except Exception as e:
+        logger.exception("GET /games/%s/%s/%s failed", username, year, month)
         raise HTTPException(status_code=502, detail=f"Upstream fetch failed: {e}")
     return [GameOut(**g.__dict__) for g in games]
+
 
 @app.post("/ingest/{username}/{year}/{month}")
 def ingest_month(
@@ -119,10 +141,12 @@ def ingest_month(
     try:
         result = ingest_month_into_db(username, year, month)
     except Exception as e:
+        logger.exception("POST /ingest/%s/%s/%s failed", username, year, month)
         raise HTTPException(status_code=502, detail=f"Ingest failed: {e}")
     return result
+
 
 if __name__ == "__main__":
     # Run with: uvicorn fetch:app --reload
     import uvicorn
-    uvicorn.run("fetch:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("fetch:app", host="127.0.0.1", port=8000, reload=True, log_level="debug")
