@@ -15,11 +15,36 @@ export default function Home() {
   const engineReadyRef = useRef(false);
   const waitReadyResolvers = useRef<(() => void)[]>([]);
   const send = (cmd: string) => workerRef.current?.postMessage(cmd);
+  const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
+  const MIN_SEARCH_INTERVAL_MS = 320; // slightly stronger hard-throttle
+  const lastSearchStartRef = useRef(0);
+  // Sequencing & debounce guards
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isWaitingReadyRef = useRef(false);
+  const searchTokenRef = useRef(0); // increments for each scheduled search; used to cancel stale ones
+
+  // Sanity clamps
+  const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+  const MAX_DEPTH = 30;
+  const MIN_DEPTH = 4;
+  const MAX_MULTIPV = 5;
+  const MIN_MULTIPV = 1;
+
+  // Track last applied engine options to avoid resending unchanged values
+  const lastOptionsRef = useRef<{ threads: number; multipv: number; hash: number }>({
+    threads: 1,
+    multipv: -1, // force initial set
+    hash: 16,
+  });
+
   const isReady = () =>
     new Promise<void>((resolve) => {
       if (engineReadyRef.current) return resolve();
       waitReadyResolvers.current.push(resolve);
-      send('isready');
+      if (!isWaitingReadyRef.current) {
+        isWaitingReadyRef.current = true;
+        send('isready');
+      }
     });
 
   const [score, setScore] = useState<Score>({ cp: 0 });
@@ -39,6 +64,18 @@ export default function Home() {
     const w = new Worker('/stockfish/stockfish.js'); // classic worker served from public/
     workerRef.current = w;
 
+    // Robustness: catch worker-level errors and try to re-handshake
+    w.addEventListener('error', (e) => {
+      console.error('[SF] Worker error:', e);
+      engineReadyRef.current = false;
+      isWaitingReadyRef.current = false;
+      // Try a light re-init; if it fails, next search will re-handshake
+      try { send('uci'); } catch {}
+    });
+    w.addEventListener('messageerror', (e) => {
+      console.error('[SF] MessageError:', e);
+    });
+
     // Temporary accumulator for the currently active key
     let acc: { [id: number]: PV } = {};
     let lastScore: Score | undefined = undefined;
@@ -53,6 +90,7 @@ export default function Home() {
       }
       if (data === 'readyok') {
         engineReadyRef.current = true;
+        isWaitingReadyRef.current = false;
         // release all waiters
         for (const r of waitReadyResolvers.current) r();
         waitReadyResolvers.current = [];
@@ -63,7 +101,11 @@ export default function Home() {
       if (activeKeyRef.current !== currentKeyRef.current) return;
 
       if (data.startsWith('info')) {
-        const p = parseInfo(data);
+        let p: ReturnType<typeof parseInfo> | null = null;
+        try { p = parseInfo(data); } catch (err) {
+          console.warn('[SF] parseInfo failed:', err, 'for line:', data);
+          p = null;
+        }
         if (!p) return;
 
         if (p.score) lastScore = p.score;
@@ -103,24 +145,54 @@ export default function Home() {
     activeKeyRef.current = key;
     setPvs([]);
 
-    // Stop whatever was running
-    send('stop');
+    // Hard throttle: ensure a minimum spacing between engine starts
+    const now = Date.now();
+    const since = now - lastSearchStartRef.current;
+    if (since < MIN_SEARCH_INTERVAL_MS) {
+      await sleep(MIN_SEARCH_INTERVAL_MS - since);
+    }
+    lastSearchStartRef.current = Date.now();
 
-    // Ensure engine is ready before setting options/position/go
+    // Bump token so any in-flight starters can bail out
+    const myToken = ++searchTokenRef.current;
+
+    // Stop whatever was running and wait for engine to be ready
+    send('stop');
+    await sleep(40); // let the engine settle
     await isReady();
+    if (myToken !== searchTokenRef.current) return; // canceled by a newer request
+
+    // Clamp inputs defensively
+    const d = clamp(depth, MIN_DEPTH, MAX_DEPTH);
+    const m = clamp(multiPV, MIN_MULTIPV, MAX_MULTIPV);
 
     // Safe defaults for WASM build
-    send('setoption name Threads value 1');
-    send(`setoption name MultiPV value ${multiPV}`);
-    // Optional: keep hash small in the browser to avoid memory issues
-    send('setoption name Hash value 16');
+    const wanted = { threads: 1, multipv: m, hash: 16 };
+    if (lastOptionsRef.current.threads !== wanted.threads) {
+      send(`setoption name Threads value ${wanted.threads}`);
+      lastOptionsRef.current.threads = wanted.threads;
+    }
+    if (lastOptionsRef.current.multipv !== wanted.multipv) {
+      send(`setoption name MultiPV value ${wanted.multipv}`);
+      lastOptionsRef.current.multipv = wanted.multipv;
+    }
+    if (lastOptionsRef.current.hash !== wanted.hash) {
+      send(`setoption name Hash value ${wanted.hash}`);
+      lastOptionsRef.current.hash = wanted.hash;
+    }
+
+    // Barrier to let options apply
+    await isReady();
+    if (myToken !== searchTokenRef.current) return;
 
     send(`position fen ${f}`);
+    await sleep(10);
 
-    // Barrier to avoid racing setoption/position vs go
+    // Barrier to avoid racing position vs go
     await isReady();
+    if (myToken !== searchTokenRef.current) return;
 
-    send(`go depth ${depth}`);
+    send(`go depth ${d}`);
   }, [depth, multiPV]);
 
   const showFromCacheOrAnalyze = useCallback((f: string) => {
@@ -134,7 +206,7 @@ export default function Home() {
       setPvs(cached.pvs);
 
       // Also stop any leftover search to save CPU and reduce races
-      send('stop');
+      try { send('stop'); } catch {}
       activeKeyRef.current = '';
       return;
     }
@@ -142,10 +214,18 @@ export default function Home() {
     startSearch(f, key);
   }, [depth, multiPV, makeKey, startSearch]);
 
+  const scheduleShowFromCacheOrAnalyze = useCallback((f: string) => {
+    // Coalesce rapid changes into one engine call
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      showFromCacheOrAnalyze(f);
+    }, 220); // slightly longer debounce to absorb rapid scrubbing
+  }, [showFromCacheOrAnalyze]);
+
   // Run whenever fen OR engine settings change
   useEffect(() => {
-    showFromCacheOrAnalyze(fen);
-  }, [fen, depth, multiPV, showFromCacheOrAnalyze]);
+    scheduleShowFromCacheOrAnalyze(fen);
+  }, [fen, depth, multiPV, scheduleShowFromCacheOrAnalyze]);
 
   const legalMoves = useMemo(() => {
     const dests = new Map<string, string[]>();
@@ -320,6 +400,12 @@ export default function Home() {
       setCurrentMoveIndex(prev => prev + 1);
     }
   }, [currentMoveIndex]);
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, []);
 
   return (
     <div>
