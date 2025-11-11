@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Chessboard from '@/components/Chessboard';
 import EvalBar, { type Score } from '@/components/EvalBar';
 import PVList, { type PV } from '@/components/PVList';
@@ -55,36 +55,77 @@ export default function Home() {
     analyze(fen);
   }, [fen, analyze]);
 
-  // Calculate legal moves for chessground
-  const getLegalMoves = useCallback((): Map<string, string[]> => {
+  const legalMoves = useMemo(() => {
     const dests = new Map<string, string[]>();
-    // Use current FEN to ensure we get legal moves for the current position
-    const tempGame = new Chess(fen);
-    const moves = tempGame.moves({ verbose: true });
-
-    moves.forEach((move) => {
-      if (!dests.has(move.from)) {
-        dests.set(move.from, []);
-      }
-      dests.get(move.from)!.push(move.to);
-    });
-
+    const g = new Chess(fen);
+    for (const m of g.moves({ verbose: true })) {
+      if (!dests.has(m.from)) dests.set(m.from, []);
+      dests.get(m.from)!.push(m.to);
+    }
     return dests;
-  }, [fen]); // Recalculate when FEN changes
+  }, [fen]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Prevent page scroll with arrows and ignore auto-repeat while key is held down
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        if ((e as any).repeat) return;
+      } else {
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        if (currentMoveIndex > 0) {
+          const newIndex = currentMoveIndex - 1;
+          const newFen = moveHistory[newIndex];
+          gameRef.current = new Chess(newFen);
+          setFen(newFen);
+          setCurrentMoveIndex(newIndex);
+        }
+      } else if (e.key === 'ArrowRight') {
+        if (currentMoveIndex < moveHistory.length - 1) {
+          const newIndex = currentMoveIndex + 1;
+          const newFen = moveHistory[newIndex];
+          gameRef.current = new Chess(newFen);
+          setFen(newFen);
+          setCurrentMoveIndex(newIndex);
+        }
+      } else if (e.key === 'Home') {
+        if (moveHistory.length) {
+          const startFen = moveHistory[0];
+          gameRef.current = new Chess(startFen);
+          setFen(startFen);
+          setCurrentMoveIndex(0);
+        }
+      } else if (e.key === 'End') {
+        if (moveHistory.length) {
+          const endFen = moveHistory[moveHistory.length - 1];
+          gameRef.current = new Chess(endFen);
+          setFen(endFen);
+          setCurrentMoveIndex(moveHistory.length - 1);
+        }
+      }
+    };
+    // passive:false so we can call preventDefault on arrows
+    window.addEventListener('keydown', handler, { passive: false });
+    return () => window.removeEventListener('keydown', handler as any);
+  }, [moveHistory, currentMoveIndex]);
 
   // Handle user moves
   const onUserMove = useCallback((from: string, to: string, promotion?: 'q'|'r'|'b'|'n') => {
-    try {
-     const mv = gameRef.current.move({ from, to, promotion: promotion ?? 'q' });
-      if (mv) {
-        const nf = gameRef.current.fen();
-        setFen(nf);
-      }
-    } catch (error) {
-      // Move is invalid, ignore it - chessground should have prevented this
-      console.warn('Invalid move attempted:', { from, to, promotion });
-    }
-  }, [fen, currentMoveIndex]);
+    const g = gameRef.current;
+    const mv = g.move({ from, to, promotion: promotion ?? 'q' });
+    if (!mv) return;
+    const nf = g.fen();
+    setFen(nf);
+    setMoveHistory(prev => {
+      const next = prev.slice(0, currentMoveIndex + 1);
+      next.push(nf);
+      return next;
+    });
+    setCurrentMoveIndex(i => i + 1);
+  }, [currentMoveIndex]);
 
   // Handle PGN file upload
   const onPgnUpload = async (f: File) => {
@@ -224,7 +265,7 @@ export default function Home() {
         <div className="board-panel">
           <div className="panel-header">Chess Board</div>
           <div className="board-section">
-            <Chessboard fen={fen} onUserMove={onUserMove} legalMoves={getLegalMoves()} />
+            <Chessboard fen={fen} onUserMove={onUserMove} legalMoves={legalMoves} />
             <EvalBar score={score} />
           </div>
           <div className="board-navigation">
