@@ -24,34 +24,132 @@ body {
   padding: 12px;
 }
 
-.container {
+.main-layout {
   display: flex;
   justify-content: center;
   align-items: start;
+  gap: 20px;
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.board-panel,
+.engine-panel {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 12px 20px;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.board-section {
+  display: flex;
+  align-items: center;
   gap: 16px;
-  padding: 16px;
-  flex-wrap: wrap;
+  padding: 20px;
+  justify-content: center;
+  min-height: 640px;
+  position: relative;
+}
+
+.board-navigation {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.nav-button {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #374151;
+}
+
+.nav-button:hover:not(:disabled) {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.nav-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.nav-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: #f3f4f6;
+}
+
+.engine-panel {
+  width: 400px;
+  flex-shrink: 0;
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+  .main-layout {
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+  
+  .engine-panel {
+    width: 100%;
+    max-width: 500px;
+  }
+  
+  .board-section {
+    flex-direction: column;
+    align-items: center;
+  }
 }
 
 /* Board wrapper with padding for coordinates */
 .board-wrapper {
   position: relative;
-  padding: 20px;
   display: inline-block;
+  /* No padding - coordinates are positioned absolutely outside */
 }
 
 .board {
   width: 560px;
   height: 560px;
+  position: relative;
 }
 
 /* Board coordinates - positioned outside the board */
 .board-coords {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  top: -20px;
+  left: -20px;
+  width: 600px;
+  height: 600px;
   pointer-events: none;
   user-select: none;
 }
@@ -84,10 +182,11 @@ body {
   display: flex;
   justify-content: space-between;
   width: 560px;
+  pointer-events: none;
 }
 
 .coords-files.coords-bottom {
-  bottom: -18px;
+  bottom: 2px;
 }
 
 .coords-files.coords-top {
@@ -109,10 +208,11 @@ body {
   flex-direction: column;
   justify-content: space-between;
   width: 20px;
+  pointer-events: none;
 }
 
 .coords-ranks.coords-left {
-  left: -18px;
+  left: 2px;
 }
 
 .coords-ranks.coords-right {

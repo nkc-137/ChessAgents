@@ -14,6 +14,8 @@ export default function Home() {
   const [pvs, setPvs] = useState<PV[]>([]);
   const [depth, setDepth] = useState<number>(16);
   const [multiPV, setMultiPV] = useState<number>(3);
+  const [moveHistory, setMoveHistory] = useState<string[]>([new Chess().fen()]);
+  const [currentMoveIndex, setCurrentMoveIndex] = useState<number>(0);
 
   // Initialize Stockfish worker
   useEffect(() => {
@@ -56,7 +58,9 @@ export default function Home() {
   // Calculate legal moves for chessground
   const getLegalMoves = useCallback((): Map<string, string[]> => {
     const dests = new Map<string, string[]>();
-    const moves = gameRef.current.moves({ verbose: true });
+    // Use current FEN to ensure we get legal moves for the current position
+    const tempGame = new Chess(fen);
+    const moves = tempGame.moves({ verbose: true });
 
     moves.forEach((move) => {
       if (!dests.has(move.from)) {
@@ -66,12 +70,12 @@ export default function Home() {
     });
 
     return dests;
-  }, []);
+  }, [fen]); // Recalculate when FEN changes
 
   // Handle user moves
   const onUserMove = useCallback((from: string, to: string, promotion?: 'q'|'r'|'b'|'n') => {
     try {
-      const mv = gameRef.current.move({ from, to, promotion: promotion ?? 'q' });
+     const mv = gameRef.current.move({ from, to, promotion: promotion ?? 'q' });
       if (mv) {
         const nf = gameRef.current.fen();
         setFen(nf);
@@ -80,7 +84,7 @@ export default function Home() {
       // Move is invalid, ignore it - chessground should have prevented this
       console.warn('Invalid move attempted:', { from, to, promotion });
     }
-  }, []);
+  }, [fen, currentMoveIndex]);
 
   // Handle PGN file upload
   const onPgnUpload = async (f: File) => {
@@ -89,37 +93,100 @@ export default function Home() {
     const g = new Chess();
     g.loadPgn(games[0], { strict: false });
     gameRef.current = g;
+
+    // Build move history from PGN
+    const history: string[] = [];
+    const tempGame = new Chess();
+    history.push(tempGame.fen());
+
+    const moves = g.history({ verbose: true });
+    moves.forEach(move => {
+      tempGame.move(move);
+      history.push(tempGame.fen());
+    });
+
+    setMoveHistory(history);
+    setCurrentMoveIndex(history.length - 1);
     setFen(g.fen());
   };
 
-  // Apply PV line (best move preview)
-  const applyPV = (uci: string[]) => {
-  if (!uci.length) return;
-  const g = new Chess(gameRef.current.fen());
-
-  // parse first UCI move
-  const [first] = uci;
-  const from = first.slice(0, 2);
-  const to = first.slice(2, 4);
-  const promo = first.length > 4 ? first[4] as any : undefined;
-
-  // check legality against generated legal moves
-  const legal = g.moves({ verbose: true }).some(m =>
-    m.from === from &&
-    m.to === to &&
-    (m.promotion ? m.promotion === promo : true)
-  );
-  if (!legal) {
-    console.warn('PV move is not legal in current position:', { from, to, promo, fen: g.fen() });
-    return; // or try a different PV here
-  }
-
-  // apply if legal
-  if (g.move({ from, to, promotion: promo })) {
+  // Navigation functions
+  const goToStart = useCallback(() => {
+    if (moveHistory.length === 0) return;
+    const startFen = moveHistory[0];
+    const g = new Chess(startFen);
     gameRef.current = g;
-    setFen(g.fen());
-  }
-};
+    setFen(startFen);
+    setCurrentMoveIndex(0);
+  }, [moveHistory]);
+
+  const goBack = useCallback(() => {
+    if (currentMoveIndex > 0) {
+      const newIndex = currentMoveIndex - 1;
+      const newFen = moveHistory[newIndex];
+      const g = new Chess(newFen);
+      gameRef.current = g;
+      setFen(newFen);
+      setCurrentMoveIndex(newIndex);
+    }
+  }, [moveHistory, currentMoveIndex]);
+
+  const goForward = useCallback(() => {
+    if (currentMoveIndex < moveHistory.length - 1) {
+      const newIndex = currentMoveIndex + 1;
+      const newFen = moveHistory[newIndex];
+      const g = new Chess(newFen);
+      gameRef.current = g;
+      setFen(newFen);
+      setCurrentMoveIndex(newIndex);
+    }
+  }, [moveHistory, currentMoveIndex]);
+
+  const goToEnd = useCallback(() => {
+    if (moveHistory.length === 0) return;
+    const endFen = moveHistory[moveHistory.length - 1];
+    const g = new Chess(endFen);
+    gameRef.current = g;
+    setFen(endFen);
+    setCurrentMoveIndex(moveHistory.length - 1);
+  }, [moveHistory]);
+
+  // Apply PV line (best move preview)
+  const applyPV = useCallback((uci: string[]) => {
+    if (!uci.length) return;
+    const g = new Chess(gameRef.current.fen());
+
+    // parse first UCI move
+    const [first] = uci;
+    const from = first.slice(0, 2);
+    const to = first.slice(2, 4);
+    const promo = first.length > 4 ? first[4] as any : undefined;
+
+    // check legality against generated legal moves
+    const legal = g.moves({ verbose: true }).some(m =>
+      m.from === from &&
+      m.to === to &&
+      (m.promotion ? m.promotion === promo : true)
+    );
+    if (!legal) {
+      console.warn('PV move is not legal in current position:', { from, to, promo, fen: g.fen() });
+      return; // or try a different PV here
+    }
+
+    // apply if legal
+    if (g.move({ from, to, promotion: promo })) {
+      const nf = g.fen();
+      gameRef.current = g;
+      setFen(nf);
+      // Update history - remove any moves after current index, then add new move
+      setMoveHistory(prev => {
+        const newHistory = prev.slice(0, currentMoveIndex + 1);
+        newHistory.push(nf);
+        return newHistory;
+      });
+      setCurrentMoveIndex(prev => prev + 1);
+    }
+  }, [currentMoveIndex]);
 
   return (
     <div>
@@ -153,10 +220,52 @@ export default function Home() {
         </label>
       </header>
 
-      <main className="container">
-        <Chessboard fen={fen} onUserMove={onUserMove} legalMoves={getLegalMoves()} />
-        <EvalBar score={score} />
-        <PVList pvs={pvs} onApply={applyPV} />
+      <main className="main-layout">
+        <div className="board-panel">
+          <div className="panel-header">Chess Board</div>
+          <div className="board-section">
+            <Chessboard fen={fen} onUserMove={onUserMove} legalMoves={getLegalMoves()} />
+            <EvalBar score={score} />
+          </div>
+          <div className="board-navigation">
+            <button
+              onClick={goToStart}
+              disabled={currentMoveIndex === 0}
+              className="nav-button"
+              title="Go to start"
+            >
+              ⏮
+            </button>
+            <button
+              onClick={goBack}
+              disabled={currentMoveIndex === 0}
+              className="nav-button"
+              title="Previous move"
+            >
+              ◀
+            </button>
+            <button
+              onClick={goForward}
+              disabled={currentMoveIndex >= moveHistory.length - 1}
+              className="nav-button"
+              title="Next move"
+            >
+              ▶
+            </button>
+            <button
+              onClick={goToEnd}
+              disabled={currentMoveIndex >= moveHistory.length - 1}
+              className="nav-button"
+              title="Go to end"
+            >
+              ⏭
+            </button>
+          </div>
+        </div>
+        <div className="engine-panel">
+          <div className="panel-header">Engine Analysis</div>
+          <PVList pvs={pvs} onApply={applyPV} />
+        </div>
       </main>
     </div>
   );
