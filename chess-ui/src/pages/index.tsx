@@ -10,6 +10,18 @@ export default function Home() {
   const [fen, setFen] = useState<string>(new Chess().fen());
   const gameRef = useRef(new Chess());
   const workerRef = useRef<Worker | null>(null);
+
+  // --- Engine readiness + helpers ---
+  const engineReadyRef = useRef(false);
+  const waitReadyResolvers = useRef<(() => void)[]>([]);
+  const send = (cmd: string) => workerRef.current?.postMessage(cmd);
+  const isReady = () =>
+    new Promise<void>((resolve) => {
+      if (engineReadyRef.current) return resolve();
+      waitReadyResolvers.current.push(resolve);
+      send('isready');
+    });
+
   const [score, setScore] = useState<Score>({ cp: 0 });
   const [pvs, setPvs] = useState<PV[]>([]);
   const [depth, setDepth] = useState<number>(16);
@@ -17,43 +29,123 @@ export default function Home() {
   const [moveHistory, setMoveHistory] = useState<string[]>([new Chess().fen()]);
   const [currentMoveIndex, setCurrentMoveIndex] = useState<number>(0);
 
+  type CachedEval = { score?: Score; pvs: PV[]; depth: number; multiPV: number; ts: number };
+  const cacheRef = useRef<Map<string, CachedEval>>(new Map());
+  const activeKeyRef = useRef<string>('');     // key for the search currently running in the worker
+  const currentKeyRef = useRef<string>('');    // key representing the UI's current (fen,depth,multipv)
+
   // Initialize Stockfish worker
   useEffect(() => {
-  const w = new Worker('/stockfish/stockfish.js'); // classic worker served from public/
-  workerRef.current = w;
+    const w = new Worker('/stockfish/stockfish.js'); // classic worker served from public/
+    workerRef.current = w;
 
-  w.onmessage = (e) => {
-    const s = String(e.data);
-    const p = parseInfo(s);
-    if (!p) return;
-    if (p.score) setScore(p.score);
-    if (p.pv && p.multiPv) {
-      setPvs(prev => {
-        const others = prev.filter(x => x.id !== p.multiPv);
-        const curr = { id: p.multiPv!, score: p.score ?? {}, line: p.pv! };
-        return [...others, curr].sort((a, b) => a.id - b.id);
-      });
+    // Temporary accumulator for the currently active key
+    let acc: { [id: number]: PV } = {};
+    let lastScore: Score | undefined = undefined;
+
+    w.onmessage = (e) => {
+      const data = String(e.data);
+
+      // UCI handshake & readiness
+      if (data === 'uciok') {
+        send('isready');
+        return;
+      }
+      if (data === 'readyok') {
+        engineReadyRef.current = true;
+        // release all waiters
+        for (const r of waitReadyResolvers.current) r();
+        waitReadyResolvers.current = [];
+        return;
+      }
+
+      // Only process messages for the actively requested key. If user navigated, ignore stale output.
+      if (activeKeyRef.current !== currentKeyRef.current) return;
+
+      if (data.startsWith('info')) {
+        const p = parseInfo(data);
+        if (!p) return;
+
+        if (p.score) lastScore = p.score;
+
+        if (p.pv && p.multiPv) {
+          acc[p.multiPv] = { id: p.multiPv, score: p.score ?? lastScore ?? {}, line: p.pv };
+          // Reflect live updates in UI (sorted by id)
+          const arr = Object.values(acc).sort((a, b) => a.id - b.id);
+          setPvs(arr);
+          if (p.score) setScore(p.score);
+        }
+      } else if (data.startsWith('bestmove')) {
+        // Finalize and cache for the current active key
+        const finalArr = Object.values(acc).sort((a, b) => a.id - b.id);
+        cacheRef.current.set(currentKeyRef.current, {
+          score: lastScore,
+          pvs: finalArr,
+          depth,
+          multiPV,
+          ts: Date.now(),
+        });
+        // Reset accumulator for next search
+        acc = {};
+        lastScore = undefined;
+      }
+    };
+
+    // init the engine
+    send('uci');
+
+    return () => w.terminate();
+  }, []);
+
+  const makeKey = useCallback((f: string, d: number, m: number) => `${f}|d=${d}|m=${m}`, []);
+
+  const startSearch = useCallback(async (f: string, key: string) => {
+    activeKeyRef.current = key;
+    setPvs([]);
+
+    // Stop whatever was running
+    send('stop');
+
+    // Ensure engine is ready before setting options/position/go
+    await isReady();
+
+    // Safe defaults for WASM build
+    send('setoption name Threads value 1');
+    send(`setoption name MultiPV value ${multiPV}`);
+    // Optional: keep hash small in the browser to avoid memory issues
+    send('setoption name Hash value 16');
+
+    send(`position fen ${f}`);
+
+    // Barrier to avoid racing setoption/position vs go
+    await isReady();
+
+    send(`go depth ${depth}`);
+  }, [depth, multiPV]);
+
+  const showFromCacheOrAnalyze = useCallback((f: string) => {
+    const key = makeKey(f, depth, multiPV);
+    currentKeyRef.current = key;
+
+    const cached = cacheRef.current.get(key);
+    if (cached) {
+      // Serve from cache, no engine call
+      setScore(cached.score ?? { cp: 0 });
+      setPvs(cached.pvs);
+
+      // Also stop any leftover search to save CPU and reduce races
+      send('stop');
+      activeKeyRef.current = '';
+      return;
     }
-  };
+    // Not cached → start a new search
+    startSearch(f, key);
+  }, [depth, multiPV, makeKey, startSearch]);
 
-  // init the engine
-  w.postMessage('uci');
-
-  return () => w.terminate();
-}, []);
-
-  // Analyze position with Stockfish
-  const analyze = useCallback((f: string) => {
-  const w = workerRef.current; if (!w) return;
-  w.postMessage('stop');
-  w.postMessage(`position fen ${f}`);
-  w.postMessage(`go depth ${depth} multipv ${multiPV}`);
-  setPvs([]);
-}, [depth, multiPV]);
-
+  // Run whenever fen OR engine settings change
   useEffect(() => {
-    analyze(fen);
-  }, [fen, analyze]);
+    showFromCacheOrAnalyze(fen);
+  }, [fen, depth, multiPV, showFromCacheOrAnalyze]);
 
   const legalMoves = useMemo(() => {
     const dests = new Map<string, string[]>();
