@@ -5,6 +5,7 @@ import PVList, { type PV } from '@/components/PVList';
 import { Chess } from 'chess.js';
 import { parseInfo } from '@/lib/uci';
 import { readTextFile, splitMultiGamePgn } from '@/lib/pgn';
+import { saveGames, type StoredGame } from '@/lib/db';
 
 export default function Home() {
   const [fen, setFen] = useState<string>(new Chess().fen());
@@ -54,6 +55,8 @@ export default function Home() {
   const [multiPV, setMultiPV] = useState<number>(3);
   const [moveHistory, setMoveHistory] = useState<string[]>([new Chess().fen()]);
   const [currentMoveIndex, setCurrentMoveIndex] = useState<number>(0);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanStatus, setScanStatus] = useState<string | null>(null);
 
   type CachedEval = { score?: Score; pvs: PV[]; depth: number; multiPV: number; ts: number };
   const cacheRef = useRef<Map<string, CachedEval>>(new Map());
@@ -429,6 +432,50 @@ export default function Home() {
     };
   }, []);
 
+  const scanLatestMonth = useCallback(async () => {
+    const trimmed = chessComUser.trim();
+    if (!trimmed) {
+      setScanStatus('Enter a chess.com username.');
+      return;
+    }
+    if (isScanning) return;
+    setIsScanning(true);
+    setScanStatus('Fetching games…');
+    try {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - 30);
+
+      const months: Array<{ year: number; month: number }> = [];
+      const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+      while (cursor <= end) {
+        months.push({ year: cursor.getFullYear(), month: cursor.getMonth() + 1 });
+        cursor.setMonth(cursor.getMonth() + 1);
+      }
+
+      let totalSaved = 0;
+      for (const { year, month } of months) {
+        const resp = await fetch(`/games/${encodeURIComponent(trimmed)}/${year}/${month.toString().padStart(2, '0')}`);
+        if (!resp.ok) throw new Error(`Fetch failed for ${year}-${month} (${resp.status})`);
+        const games: StoredGame[] = await resp.json();
+        await saveGames(
+          games.map((g) => ({
+            ...g,
+            username: trimmed,
+            end_time_utc: g.end_time_utc ?? Date.now(),
+          }))
+        );
+        totalSaved += games.length;
+      }
+      setScanStatus(`Saved ${totalSaved} game${totalSaved === 1 ? '' : 's'} from the last 30 days.`);
+    } catch (err) {
+      console.error('Scan failed', err);
+      setScanStatus(err instanceof Error ? err.message : 'Failed to fetch games.');
+    } finally {
+      setIsScanning(false);
+    }
+  }, [chessComUser, isScanning]);
+
   return (
     <div>
       <header style={{ display: 'flex', gap: 12, padding: 12, alignItems: 'center', borderBottom: '1px solid #eee' }}>
@@ -471,9 +518,19 @@ export default function Home() {
             value={chessComUser}
             onChange={(e) => setChessComUser(e.target.value)}
           />
-          <button className="sidebar-button" type="button">
-            Scan
+          <button
+            className="sidebar-button"
+            type="button"
+            onClick={scanLatestMonth}
+            disabled={!chessComUser.trim() || isScanning}
+          >
+            {isScanning ? 'Scanning…' : 'Scan'}
           </button>
+          {scanStatus && (
+            <div className="sidebar-status">
+              {scanStatus}
+            </div>
+          )}
         </div>
         <div className="board-panel">
           <div className="panel-header">Chess Board</div>

@@ -97,6 +97,18 @@ body {
   transform: translateY(0);
 }
 
+.sidebar-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.sidebar-status {
+  font-size: 12px;
+  color: #4b5563;
+  line-height: 1.4;
+}
+
 .panel-header {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;

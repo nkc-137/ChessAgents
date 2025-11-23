@@ -170,9 +170,6 @@ def ingest_month_endpoint(
     return result
 
 
-# ---------------------------
-# Agent endpoints (use same session)
-# ---------------------------
 Color = Literal["white", "black"]
 Result = Literal["win", "loss", "draw"]
 OrderBy = Literal["date", "id"]
