@@ -47,6 +47,7 @@ export default function Home() {
       }
     });
 
+  const [chessComUser, setChessComUser] = useState('');
   const [score, setScore] = useState<Score>({ cp: 0 });
   const [pvs, setPvs] = useState<PV[]>([]);
   const [depth, setDepth] = useState<number>(16);
@@ -58,6 +59,7 @@ export default function Home() {
   const cacheRef = useRef<Map<string, CachedEval>>(new Map());
   const activeKeyRef = useRef<string>('');     // key for the search currently running in the worker
   const currentKeyRef = useRef<string>('');    // key representing the UI's current (fen,depth,multipv)
+  const currentFenRef = useRef<string>(fen);   // fen tied to currentKeyRef/current search
 
   // Initialize Stockfish worker
   useEffect(() => {
@@ -101,6 +103,8 @@ export default function Home() {
       // Only process messages for the actively requested key. If user navigated, ignore stale output.
       if (activeKeyRef.current !== currentKeyRef.current) return;
 
+      const fenForActiveKey = currentFenRef.current;
+
       if (data.startsWith('info')) {
         let p: ReturnType<typeof parseInfo> | null = null;
         try { p = parseInfo(data); } catch (err) {
@@ -109,14 +113,16 @@ export default function Home() {
         }
         if (!p) return;
 
-        if (p.score) lastScore = p.score;
+        const oriented = orientScore(p.score, fenForActiveKey);
+        if (oriented) lastScore = oriented;
 
         if (p.pv && p.multiPv) {
-          acc[p.multiPv] = { id: p.multiPv, score: p.score ?? lastScore ?? {}, line: p.pv };
+          const scoreForPv = oriented ?? lastScore;
+          acc[p.multiPv] = { id: p.multiPv, score: scoreForPv ?? {}, line: p.pv };
           // Reflect live updates in UI (sorted by id)
           const arr = Object.values(acc).sort((a, b) => a.id - b.id);
           setPvs(arr);
-          if (p.score) setScore(p.score);
+          if (oriented) setScore(oriented);
         }
       } else if (data.startsWith('bestmove')) {
         // Finalize and cache for the current active key
@@ -141,6 +147,16 @@ export default function Home() {
   }, []);
 
   const makeKey = useCallback((f: string, d: number, m: number) => `${f}|d=${d}|m=${m}`, []);
+
+  const orientScore = useCallback((s: Score | undefined, f: string): Score | undefined => {
+    if (!s) return s;
+    const turn = f.split(' ')[1];
+    const factor = turn === 'w' ? 1 : -1;
+    const oriented: Score = {};
+    if (s.cp !== undefined) oriented.cp = s.cp * factor;
+    if (s.mate !== undefined) oriented.mate = s.mate * factor;
+    return oriented;
+  }, []);
 
   const startSearch = useCallback(async (f: string, key: string) => {
     activeKeyRef.current = key;
@@ -199,9 +215,11 @@ export default function Home() {
   const showFromCacheOrAnalyze = useCallback((f: string) => {
     const key = makeKey(f, depth, multiPV);
     currentKeyRef.current = key;
+    currentFenRef.current = f;
 
     const cached = cacheRef.current.get(key);
     if (cached) {
+      console.log('[cache hit]', key, cached);
       // Serve from cache, no engine call
       setScore(cached.score ?? { cp: 0 });
       setPvs(cached.pvs);
@@ -211,6 +229,7 @@ export default function Home() {
       activeKeyRef.current = '';
       return;
     }
+    console.log('[cache not hit]', key, cached);
     // Not cached → start a new search
     startSearch(f, key);
   }, [depth, multiPV, makeKey, startSearch]);
@@ -443,11 +462,24 @@ export default function Home() {
       </header>
 
       <main className="main-layout">
+        <div className="sidebar-panel">
+          <span className="sidebar-heading">chess.com username</span>
+          <input
+            className="sidebar-input"
+            type="text"
+            placeholder="Enter handle"
+            value={chessComUser}
+            onChange={(e) => setChessComUser(e.target.value)}
+          />
+          <button className="sidebar-button" type="button">
+            Scan
+          </button>
+        </div>
         <div className="board-panel">
           <div className="panel-header">Chess Board</div>
           <div className="board-section">
             <Chessboard fen={fen} onUserMove={onUserMove} legalMoves={legalMoves} />
-            <EvalBar score={score} />
+            <EvalBar score={score} primaryScore={pvs[0]?.score ?? score} />
           </div>
           <div className="board-navigation">
             <button
