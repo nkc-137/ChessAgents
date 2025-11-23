@@ -61,7 +61,7 @@ export default function Home() {
 
   // Initialize Stockfish worker
   useEffect(() => {
-    const w = new Worker('/stockfish/stockfish.js'); // classic worker served from public/
+    const w = new Worker('/stockfish/stockfish.js');
     workerRef.current = w;
 
     // Robustness: catch worker-level errors and try to re-handshake
@@ -72,6 +72,7 @@ export default function Home() {
       // Try a light re-init; if it fails, next search will re-handshake
       try { send('uci'); } catch {}
     });
+    
     w.addEventListener('messageerror', (e) => {
       console.error('[SF] MessageError:', e);
     });
@@ -286,10 +287,12 @@ export default function Home() {
 
   // Handle user moves
   const onUserMove = useCallback((from: string, to: string, promotion?: 'q'|'r'|'b'|'n') => {
+    // Create a new Chess instance from the current FEN to ensure we're at the right position
     const g = gameRef.current;
     const mv = g.move({ from, to, promotion: promotion ?? 'q' });
     if (!mv) return;
     const nf = g.fen();
+    gameRef.current = g;
     setFen(nf);
     setMoveHistory(prev => {
       const next = prev.slice(0, currentMoveIndex + 1);
@@ -297,7 +300,7 @@ export default function Home() {
       return next;
     });
     setCurrentMoveIndex(i => i + 1);
-  }, [currentMoveIndex]);
+  }, [currentMoveIndex, fen]);
 
   // Handle PGN file upload
   const onPgnUpload = async (f: File) => {

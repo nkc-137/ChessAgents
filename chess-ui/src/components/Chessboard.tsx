@@ -15,6 +15,11 @@ type Props = {
 export default function Chessboard({ fen, onUserMove, bestMove, legalMoves }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<CGApi | null>(null);
+  const onUserMoveRef = useRef(onUserMove);
+
+  useEffect(() => {
+    onUserMoveRef.current = onUserMove;
+  }, [onUserMove]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -29,7 +34,7 @@ export default function Chessboard({ fen, onUserMove, bestMove, legalMoves }: Pr
         dests: legalMoves || new Map(),
       },
       events: {
-        move: (from: any, to: any) => onUserMove(from, to, 'q')
+        move: (from: any, to: any) => onUserMoveRef.current?.(from, to, 'q')
       }
     };
     apiRef.current = Chessground(hostRef.current, cfg);
