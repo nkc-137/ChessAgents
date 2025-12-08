@@ -529,6 +529,32 @@ export default function Home() {
     }
   };
 
+  const loadStoredGame = useCallback((game: StoredGame) => {
+    if (!game.pgn) return;
+    const g = new Chess();
+    try {
+      g.loadPgn(game.pgn, { strict: false });
+    } catch (err) {
+      console.error('Failed to load stored PGN', err, game);
+      return;
+    }
+    gameRef.current = g;
+
+    // Build move history from PGN (same approach as upload)
+    const history: string[] = [];
+    const temp = new Chess();
+    history.push(temp.fen());
+    const moves = g.history({ verbose: true });
+    moves.forEach(m => {
+      temp.move(m);
+      history.push(temp.fen());
+    });
+
+    setMoveHistory(history);
+    setCurrentMoveIndex(history.length - 1);
+    setFen(g.fen());
+  }, []);
+
   return (
     <div>
       <header style={{ display: 'flex', gap: 12, padding: 12, alignItems: 'center', borderBottom: '1px solid #eee' }}>
@@ -589,13 +615,27 @@ export default function Home() {
             {recentStatus && !recentGames.length && <div>{recentStatus}</div>}
             {!recentStatus && !recentGames.length && <div>No saved games yet.</div>}
             {recentGames.map((g) => (
-              <div key={`${g.username}-${g.end_time_utc}`} style={{ padding: '6px 0', borderBottom: '1px solid #eee' }}>
+              <button
+                key={`${g.username}-${g.end_time_utc}-${g.pgn?.length ?? 0}`}
+                type="button"
+                onClick={() => loadStoredGame(g)}
+                style={{
+                  padding: '8px 6px',
+                  border: '1px solid #eee',
+                  borderRadius: 6,
+                  background: '#fff',
+                  textAlign: 'left',
+                  width: '100%',
+                  marginBottom: 6,
+                  cursor: 'pointer',
+                }}
+              >
                 <div style={{ fontWeight: 600 }}>{(g.white ?? 'Unknown')} vs {(g.black ?? 'Unknown')}</div>
                 <div style={{ fontSize: 12, color: '#666', display: 'flex', justifyContent: 'space-between' }}>
                   <span>{formatEndTime(g.end_time_utc)}</span>
                   <span>{g.result ?? ''}</span>
                 </div>
-              </div>
+              </button>
             ))}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
               <button
