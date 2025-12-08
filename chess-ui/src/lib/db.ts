@@ -17,6 +17,11 @@ export type StoredGame = {
   end_time_utc?: number;
 };
 
+function toMillis(ts?: number | null): number {
+  if (ts === undefined || ts === null || Number.isNaN(ts)) return Date.now();
+  return ts < 1_000_000_000_000 ? ts * 1000 : ts; // chess.com gives seconds; Date expects ms
+}
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -39,7 +44,7 @@ export async function saveGames(games: StoredGame[]) {
     games.forEach(game => {
       const normalized = {
         ...game,
-        end_time_utc: game.end_time_utc ?? Date.now(),
+        end_time_utc: toMillis(game.end_time_utc),
       };
       store.put(normalized);
     });
@@ -48,8 +53,12 @@ export async function saveGames(games: StoredGame[]) {
   });
 }
 
-export async function getRecentGames(username: string, limit = 10): Promise<StoredGame[]> {
-  if (!username.trim()) return [];
+export async function getRecentGames(
+  username: string,
+  limit = 10,
+  offset = 0
+): Promise<{ games: StoredGame[]; hasMore: boolean }> {
+  if (!username.trim()) return { games: [], hasMore: false };
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(GAMES_STORE, 'readonly');
@@ -60,6 +69,8 @@ export async function getRecentGames(username: string, limit = 10): Promise<Stor
     );
     const req = store.openCursor(range, 'prev'); // walk newest first
     const out: StoredGame[] = [];
+    const limitPlusOne = limit + 1; // grab one extra to detect "hasMore"
+    let skipLeft = offset;
     let resolved = false;
 
     req.onsuccess = () => {
@@ -67,12 +78,19 @@ export async function getRecentGames(username: string, limit = 10): Promise<Stor
       const cursor = req.result;
       if (!cursor) {
         resolved = true;
-        return resolve(out);
+        return resolve({ games: out, hasMore: false });
       }
+
+      if (skipLeft > 0) {
+        cursor.advance(skipLeft);
+        skipLeft = 0;
+        return;
+      }
+
       out.push(cursor.value as StoredGame);
-      if (out.length >= limit) {
+      if (out.length >= limitPlusOne) {
         resolved = true;
-        return resolve(out);
+        return resolve({ games: out.slice(0, limit), hasMore: true });
       }
       cursor.continue();
     };

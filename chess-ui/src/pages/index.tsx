@@ -59,6 +59,14 @@ export default function Home() {
   const [scanStatus, setScanStatus] = useState<string | null>(null);
   const [recentGames, setRecentGames] = useState<StoredGame[]>([]);
   const [recentStatus, setRecentStatus] = useState<string | null>(null);
+  const [recentPage, setRecentPage] = useState(0);
+  const [hasMoreRecent, setHasMoreRecent] = useState(false);
+  const RECENT_PAGE_SIZE = 10;
+
+  const normalizeTs = (ts?: number) => {
+    if (ts === undefined || ts === null || Number.isNaN(ts)) return Date.now();
+    return ts < 1_000_000_000_000 ? ts * 1000 : ts;
+  };
 
   type CachedEval = { score?: Score; pvs: PV[]; depth: number; multiPV: number; ts: number };
   const cacheRef = useRef<Map<string, CachedEval>>(new Map());
@@ -464,15 +472,16 @@ export default function Home() {
           games.map((g) => ({
             ...g,
             username: trimmed,
-            end_time_utc: g.end_time_utc ?? Date.now(),
+            end_time_utc: normalizeTs(g.end_time_utc),
           }))
         );
         totalSaved += games.length;
       }
       setScanStatus(`Saved ${totalSaved} game${totalSaved === 1 ? '' : 's'} from the last 30 days.`);
       // Refresh recent list after saving
-      const updated = await getRecentGames(trimmed, 10);
+      const { games: updated, hasMore } = await getRecentGames(trimmed, RECENT_PAGE_SIZE, recentPage * RECENT_PAGE_SIZE);
       setRecentGames(updated);
+      setHasMoreRecent(hasMore);
       setRecentStatus(updated.length ? null : 'No saved games yet.');
     } catch (err) {
       console.error('Scan failed', err);
@@ -480,29 +489,36 @@ export default function Home() {
     } finally {
       setIsScanning(false);
     }
-  }, [chessComUser, isScanning]);
+  }, [chessComUser, isScanning, recentPage]);
 
-  const loadRecentGames = useCallback(async (user: string) => {
+  const loadRecentGames = useCallback(async (user: string, page: number) => {
     const trimmed = user.trim();
     if (!trimmed) {
       setRecentGames([]);
       setRecentStatus(null);
+      setHasMoreRecent(false);
       return;
     }
     setRecentStatus('Loading saved games…');
     try {
-      const games = await getRecentGames(trimmed, 10);
+      const { games, hasMore } = await getRecentGames(trimmed, RECENT_PAGE_SIZE, page * RECENT_PAGE_SIZE);
       setRecentGames(games);
+      setHasMoreRecent(hasMore);
       setRecentStatus(games.length ? null : 'No saved games yet.');
     } catch (err) {
       console.error('Failed to load saved games', err);
       setRecentStatus('Failed to load saved games.');
+      setHasMoreRecent(false);
     }
   }, []);
 
   useEffect(() => {
-    loadRecentGames(chessComUser);
-  }, [chessComUser, loadRecentGames]);
+    setRecentPage(0); // reset to first page when user changes
+  }, [chessComUser]);
+
+  useEffect(() => {
+    loadRecentGames(chessComUser, recentPage);
+  }, [chessComUser, loadRecentGames, recentPage]);
 
   const formatEndTime = (ts?: number) => {
     if (!ts) return '—';
@@ -581,6 +597,27 @@ export default function Home() {
                 </div>
               </div>
             ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+              <button
+                type="button"
+                className="nav-button"
+                onClick={() => setRecentPage(p => Math.max(0, p - 1))}
+                disabled={recentPage === 0}
+                style={{ fontSize: 12 }}
+              >
+                ◀ Prev
+              </button>
+              <div style={{ fontSize: 12, color: '#555' }}>Page {recentPage + 1}</div>
+              <button
+                type="button"
+                className="nav-button"
+                onClick={() => setRecentPage(p => (hasMoreRecent ? p + 1 : p))}
+                disabled={!hasMoreRecent}
+                style={{ fontSize: 12 }}
+              >
+                Next ▶
+              </button>
+            </div>
           </div>
         </div>
         <div className="board-panel">
