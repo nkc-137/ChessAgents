@@ -47,3 +47,37 @@ export async function saveGames(games: StoredGame[]) {
     tx.onerror = () => reject(tx.error);
   });
 }
+
+export async function getRecentGames(username: string, limit = 10): Promise<StoredGame[]> {
+  if (!username.trim()) return [];
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(GAMES_STORE, 'readonly');
+    const store = tx.objectStore(GAMES_STORE);
+    const range = IDBKeyRange.bound(
+      [username, 0],
+      [username, Number.MAX_SAFE_INTEGER]
+    );
+    const req = store.openCursor(range, 'prev'); // walk newest first
+    const out: StoredGame[] = [];
+    let resolved = false;
+
+    req.onsuccess = () => {
+      if (resolved) return;
+      const cursor = req.result;
+      if (!cursor) {
+        resolved = true;
+        return resolve(out);
+      }
+      out.push(cursor.value as StoredGame);
+      if (out.length >= limit) {
+        resolved = true;
+        return resolve(out);
+      }
+      cursor.continue();
+    };
+    req.onerror = () => {
+      if (!resolved) reject(req.error);
+    };
+  });
+}

@@ -5,7 +5,7 @@ import PVList, { type PV } from '@/components/PVList';
 import { Chess } from 'chess.js';
 import { parseInfo } from '@/lib/uci';
 import { readTextFile, splitMultiGamePgn } from '@/lib/pgn';
-import { saveGames, type StoredGame } from '@/lib/db';
+import { getRecentGames, saveGames, type StoredGame } from '@/lib/db';
 
 export default function Home() {
   const [fen, setFen] = useState<string>(new Chess().fen());
@@ -57,6 +57,8 @@ export default function Home() {
   const [currentMoveIndex, setCurrentMoveIndex] = useState<number>(0);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStatus, setScanStatus] = useState<string | null>(null);
+  const [recentGames, setRecentGames] = useState<StoredGame[]>([]);
+  const [recentStatus, setRecentStatus] = useState<string | null>(null);
 
   type CachedEval = { score?: Score; pvs: PV[]; depth: number; multiPV: number; ts: number };
   const cacheRef = useRef<Map<string, CachedEval>>(new Map());
@@ -468,6 +470,10 @@ export default function Home() {
         totalSaved += games.length;
       }
       setScanStatus(`Saved ${totalSaved} game${totalSaved === 1 ? '' : 's'} from the last 30 days.`);
+      // Refresh recent list after saving
+      const updated = await getRecentGames(trimmed, 10);
+      setRecentGames(updated);
+      setRecentStatus(updated.length ? null : 'No saved games yet.');
     } catch (err) {
       console.error('Scan failed', err);
       setScanStatus(err instanceof Error ? err.message : 'Failed to fetch games.');
@@ -475,6 +481,37 @@ export default function Home() {
       setIsScanning(false);
     }
   }, [chessComUser, isScanning]);
+
+  const loadRecentGames = useCallback(async (user: string) => {
+    const trimmed = user.trim();
+    if (!trimmed) {
+      setRecentGames([]);
+      setRecentStatus(null);
+      return;
+    }
+    setRecentStatus('Loading saved games…');
+    try {
+      const games = await getRecentGames(trimmed, 10);
+      setRecentGames(games);
+      setRecentStatus(games.length ? null : 'No saved games yet.');
+    } catch (err) {
+      console.error('Failed to load saved games', err);
+      setRecentStatus('Failed to load saved games.');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRecentGames(chessComUser);
+  }, [chessComUser, loadRecentGames]);
+
+  const formatEndTime = (ts?: number) => {
+    if (!ts) return '—';
+    try {
+      return new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    } catch {
+      return '—';
+    }
+  };
 
   return (
     <div>
@@ -531,6 +568,20 @@ export default function Home() {
               {scanStatus}
             </div>
           )}
+          <div className="sidebar-status" style={{ marginTop: 12, padding: 8, border: '1px solid #eee', borderRadius: 8, background: '#fafafa' }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Saved games (latest 10)</div>
+            {recentStatus && !recentGames.length && <div>{recentStatus}</div>}
+            {!recentStatus && !recentGames.length && <div>No saved games yet.</div>}
+            {recentGames.map((g) => (
+              <div key={`${g.username}-${g.end_time_utc}`} style={{ padding: '6px 0', borderBottom: '1px solid #eee' }}>
+                <div style={{ fontWeight: 600 }}>{(g.white ?? 'Unknown')} vs {(g.black ?? 'Unknown')}</div>
+                <div style={{ fontSize: 12, color: '#666', display: 'flex', justifyContent: 'space-between' }}>
+                  <span>{formatEndTime(g.end_time_utc)}</span>
+                  <span>{g.result ?? ''}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
         <div className="board-panel">
           <div className="panel-header">Chess Board</div>
