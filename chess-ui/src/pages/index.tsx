@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Chessboard from '@/components/Chessboard';
 import EvalBar, { type Score } from '@/components/EvalBar';
 import PVList, { type PV } from '@/components/PVList';
+import { SavedGamesPanel } from '@/components/SavedGamesPanel';
+import { useSavedGames } from '@/hooks/useSavedGames';
 import { Chess } from 'chess.js';
 import { parseInfo } from '@/lib/uci';
 import { readTextFile, splitMultiGamePgn } from '@/lib/pgn';
-import { getRecentGames, saveGames, type StoredGame } from '@/lib/db';
+import { saveGames, type StoredGame } from '@/lib/db';
 
 export default function Home() {
   const [fen, setFen] = useState<string>(new Chess().fen());
@@ -17,8 +19,9 @@ export default function Home() {
   const waitReadyResolvers = useRef<(() => void)[]>([]);
   const send = (cmd: string) => workerRef.current?.postMessage(cmd);
   const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
-  const MIN_SEARCH_INTERVAL_MS = 320; // slightly stronger hard-throttle
+  const MIN_SEARCH_INTERVAL_MS = 320;
   const lastSearchStartRef = useRef(0);
+
   // Sequencing & debounce guards
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isWaitingReadyRef = useRef(false);
@@ -34,7 +37,7 @@ export default function Home() {
   // Track last applied engine options to avoid resending unchanged values
   const lastOptionsRef = useRef<{ threads: number; multipv: number; hash: number }>({
     threads: 1,
-    multipv: -1, // force initial set
+    multipv: -1,
     hash: 16,
   });
 
@@ -57,11 +60,15 @@ export default function Home() {
   const [currentMoveIndex, setCurrentMoveIndex] = useState<number>(0);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStatus, setScanStatus] = useState<string | null>(null);
-  const [recentGames, setRecentGames] = useState<StoredGame[]>([]);
-  const [recentStatus, setRecentStatus] = useState<string | null>(null);
-  const [recentPage, setRecentPage] = useState(0);
-  const [hasMoreRecent, setHasMoreRecent] = useState(false);
-  const RECENT_PAGE_SIZE = 10;
+  const {
+    games: recentGames,
+    status: recentStatus,
+    page: recentPage,
+    hasMore: hasMoreRecent,
+    goNext: nextRecentPage,
+    goPrev: prevRecentPage,
+    refresh: refreshRecentGames,
+  } = useSavedGames(chessComUser, 10);
 
   const normalizeTs = (ts?: number) => {
     if (ts === undefined || ts === null || Number.isNaN(ts)) return Date.now();
@@ -479,55 +486,14 @@ export default function Home() {
       }
       setScanStatus(`Saved ${totalSaved} game${totalSaved === 1 ? '' : 's'} from the last 30 days.`);
       // Refresh recent list after saving
-      const { games: updated, hasMore } = await getRecentGames(trimmed, RECENT_PAGE_SIZE, recentPage * RECENT_PAGE_SIZE);
-      setRecentGames(updated);
-      setHasMoreRecent(hasMore);
-      setRecentStatus(updated.length ? null : 'No saved games yet.');
+      await refreshRecentGames();
     } catch (err) {
       console.error('Scan failed', err);
       setScanStatus(err instanceof Error ? err.message : 'Failed to fetch games.');
     } finally {
       setIsScanning(false);
     }
-  }, [chessComUser, isScanning, recentPage]);
-
-  const loadRecentGames = useCallback(async (user: string, page: number) => {
-    const trimmed = user.trim();
-    if (!trimmed) {
-      setRecentGames([]);
-      setRecentStatus(null);
-      setHasMoreRecent(false);
-      return;
-    }
-    setRecentStatus('Loading saved games…');
-    try {
-      const { games, hasMore } = await getRecentGames(trimmed, RECENT_PAGE_SIZE, page * RECENT_PAGE_SIZE);
-      setRecentGames(games);
-      setHasMoreRecent(hasMore);
-      setRecentStatus(games.length ? null : 'No saved games yet.');
-    } catch (err) {
-      console.error('Failed to load saved games', err);
-      setRecentStatus('Failed to load saved games.');
-      setHasMoreRecent(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    setRecentPage(0); // reset to first page when user changes
-  }, [chessComUser]);
-
-  useEffect(() => {
-    loadRecentGames(chessComUser, recentPage);
-  }, [chessComUser, loadRecentGames, recentPage]);
-
-  const formatEndTime = (ts?: number) => {
-    if (!ts) return '—';
-    try {
-      return new Date(ts).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-    } catch {
-      return '—';
-    }
-  };
+  }, [chessComUser, isScanning, refreshRecentGames]);
 
   const loadStoredGame = useCallback((game: StoredGame) => {
     if (!game.pgn) return;
@@ -610,55 +576,15 @@ export default function Home() {
               {scanStatus}
             </div>
           )}
-          <div className="sidebar-status" style={{ marginTop: 12, padding: 8, border: '1px solid #eee', borderRadius: 8, background: '#fafafa' }}>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>Saved games (latest 10)</div>
-            {recentStatus && !recentGames.length && <div>{recentStatus}</div>}
-            {!recentStatus && !recentGames.length && <div>No saved games yet.</div>}
-            {recentGames.map((g) => (
-              <button
-                key={`${g.username}-${g.end_time_utc}-${g.pgn?.length ?? 0}`}
-                type="button"
-                onClick={() => loadStoredGame(g)}
-                style={{
-                  padding: '8px 6px',
-                  border: '1px solid #eee',
-                  borderRadius: 6,
-                  background: '#fff',
-                  textAlign: 'left',
-                  width: '100%',
-                  marginBottom: 6,
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ fontWeight: 600 }}>{(g.white ?? 'Unknown')} vs {(g.black ?? 'Unknown')}</div>
-                <div style={{ fontSize: 12, color: '#666', display: 'flex', justifyContent: 'space-between' }}>
-                  <span>{formatEndTime(g.end_time_utc)}</span>
-                  <span>{g.result ?? ''}</span>
-                </div>
-              </button>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-              <button
-                type="button"
-                className="nav-button"
-                onClick={() => setRecentPage(p => Math.max(0, p - 1))}
-                disabled={recentPage === 0}
-                style={{ fontSize: 12 }}
-              >
-                ◀ Prev
-              </button>
-              <div style={{ fontSize: 12, color: '#555' }}>Page {recentPage + 1}</div>
-              <button
-                type="button"
-                className="nav-button"
-                onClick={() => setRecentPage(p => (hasMoreRecent ? p + 1 : p))}
-                disabled={!hasMoreRecent}
-                style={{ fontSize: 12 }}
-              >
-                Next ▶
-              </button>
-            </div>
-          </div>
+          <SavedGamesPanel
+            games={recentGames}
+            status={recentStatus}
+            page={recentPage}
+            hasMore={hasMoreRecent}
+            onPrev={prevRecentPage}
+            onNext={nextRecentPage}
+            onSelect={loadStoredGame}
+          />
         </div>
         <div className="board-panel">
           <div className="panel-header">Chess Board</div>

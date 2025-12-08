@@ -30,6 +30,9 @@
       "@/lib/*": [
         "src/lib/*"
       ],
+      "@/hooks/*": [
+        "src/hooks/*"
+      ],
       "@/engine/*": [
         "src/engine/*"
       ]
